@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Masking Photo Cutter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Custom CSS for the canvas container and result */
+        :root {
+            --primary-color: #4f46e5; /* Indigo-600 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Light gray background */
+        }
+        .canvas-container {
+            position: relative;
+            cursor: crosshair;
+            touch-action: none; /* Prevents default mobile scrolling behavior while drawing */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            background-color: #fff; /* White background for the main area */
+        }
+        #maskCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            /* When drawing, the mask is red (opacity 0.8). When erasing, it's destination-out, effectively invisible */
+            opacity: 0.8; 
+        }
+        #resultCanvas {
+            border: 2px dashed #d1d5db; /* Gray border for result */
+            background: linear-gradient(45deg, #ccc 25%, transparent 25%),
+                        linear-gradient(-45deg, #ccc 25%, transparent 25%),
+                        linear-gradient(45deg, transparent 75%, #ccc 75%),
+                        linear-gradient(-45deg, transparent 75%, #ccc 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px; /* Checkered pattern for transparency */
+        }
+        .file-input-wrapper {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .file-input-wrapper:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 10px rgba(79, 70, 229, 0.3);
+        }
+        /* Custom styles for mode buttons */
+        .mode-btn {
+            border: 1px solid transparent;
+            box-shadow: none;
+            transition: background-color 0.2s, color 0.2s, box-shadow 0.2s;
+        }
+        .mode-btn.active {
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen">
+
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">Photo Eraser Tool</h1>
+            <p class="text-indigo-600 text-lg font-medium">Use **Draw Mask** to select areas for removal, and **Erase Mask** to restore them.</p>
+        </header>
+
+        <!-- Control Panel -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-6 flex flex-col lg:flex-row items-stretch lg:items-center justify-between space-y-4 lg:space-y-0 lg:space-x-4">
+            
+            <label class="file-input-wrapper lg:w-1/5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg text-center transition duration-150">
+                Upload Image
+                <input type="file" id="imageInput" accept="image/*" class="hidden">
+            </label>
+
+            <!-- NEW: Mode Selector -->
+            <div class="lg:w-1/4 flex bg-gray-50 rounded-lg shadow-inner overflow-hidden border border-gray-200">
+                <button id="drawModeBtn" class="mode-btn w-1/2 p-3 text-sm font-semibold flex items-center justify-center transition duration-150 active bg-indigo-600 text-white rounded-l-lg hover:bg-indigo-700">
+                    <svg class="h-5 w-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                    Draw Mask
+                </button>
+                <button id="eraseModeBtn" class="mode-btn w-1/2 p-3 text-sm font-semibold text-gray-700 bg-white hover:bg-gray-100 flex items-center justify-center rounded-r-lg transition duration-150 border-l border-gray-200">
+                    <svg class="h-5 w-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    Erase Mask
+                </button>
+            </div>
+
+            <!-- Brush Size Control -->
+            <div class="lg:w-1/5 bg-gray-50 p-3 rounded-lg flex flex-col justify-center shadow-inner">
+                <label for="brushSizeSlider" class="text-sm font-semibold text-gray-700 mb-2 flex justify-between items-center">
+                    Brush Size:
+                    <span id="brushSizeValue" class="text-indigo-600 font-bold">30px</span>
+                </label>
+                <input type="range" id="brushSizeSlider" min="5" max="100" value="30" class="w-full h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer">
+            </div>
+            
+            <!-- Action Buttons -->
+            <div class="flex space-x-2 lg:w-3/10">
+                <!-- Undo Button -->
+                <button id="undoBtn" class="w-1/4 bg-gray-400 hover:bg-gray-500 text-white font-semibold py-3 px-1 rounded-lg transition duration-150 shadow-md flex flex-col items-center justify-center disabled:opacity-50 text-sm" disabled>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7.707 9.293a1 1 0 010-1.414l3-3a1 1 0 011.414 1.414L10.414 9H13a1 1 0 110 2h-2.586l1.293 1.293a1 1 0 01-1.414 1.414l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" transform="scale(-1, 1) translate(-20, 0)"/>
+                    </svg>
+                    Undo
+                </button>
+
+                <!-- Redo Button -->
+                <button id="redoBtn" class="w-1/4 bg-gray-400 hover:bg-gray-500 text-white font-semibold py-3 px-1 rounded-lg transition duration-150 shadow-md flex flex-col items-center justify-center disabled:opacity-50 text-sm" disabled>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7.707 9.293a1 1 0 010-1.414l3-3a1 1 0 011.414 1.414L10.414 9H13a1 1 0 110 2h-2.586l1.293 1.293a1 1 0 01-1.414 1.414l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                    Redo
+                </button>
+
+                <button id="clearMaskBtn" class="w-1/4 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold py-3 px-1 rounded-lg transition duration-150 shadow-md flex flex-col items-center justify-center disabled:opacity-50 text-sm" disabled>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.728-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+                    </svg>
+                    Clear
+                </button>
+                <button id="cutAndDownloadBtn" class="w-1/4 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-1 rounded-lg transition duration-150 shadow-md flex flex-col items-center justify-center disabled:opacity-50 text-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.707-10.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L9.414 11H13a1 1 0 100-2H9.414l1.293-1.293z" clip-rule="evenodd" />
+                    </svg>
+                    Download
+                </button>
+            </div>
+        </div>
+
+        <!-- Canvas Area -->
+        <div id="canvasWrapper" class="canvas-container relative rounded-xl overflow-hidden hidden" style="width: 100%; max-w-4xl; margin: 0 auto;">
+            <!-- This is where the original image will be drawn, used only for pixel reference -->
+            <canvas id="originalCanvas" class="absolute top-0 left-0 opacity-100"></canvas>
+            
+            <!-- This is where the user draws the 'erase mask' -->
+            <canvas id="maskCanvas"></canvas>
+            
+            <!-- Temporary placeholder for visual structure before image load -->
+            <div id="placeholder" class="flex items-center justify-center h-64 bg-gray-200 text-gray-500 text-lg font-medium">
+                Upload an image above to start erasing.
+            </div>
+        </div>
+
+        <!-- Result Area -->
+        <div class="mt-8 pt-6 border-t border-gray-300">
+            <h2 class="text-2xl font-bold text-gray-900 mb-4">Result (Transparent Area Shown as Checkered)</h2>
+            <div class="flex justify-center p-4 bg-white rounded-xl shadow-lg">
+                <canvas id="resultCanvas" class="max-w-full h-auto"></canvas>
+            </div>
+            <p id="messageBox" class="text-red-600 text-center mt-4 hidden"></p>
+        </div>
+    </div>
+
+    <script>
+        // Global Firebase Configuration (Mandatory use)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        // --- Canvas and Context References ---
+        const imageInput = document.getElementById('imageInput');
+        const clearMaskBtn = document.getElementById('clearMaskBtn');
+        const cutAndDownloadBtn = document.getElementById('cutAndDownloadBtn');
+        const undoBtn = document.getElementById('undoBtn');
+        const redoBtn = document.getElementById('redoBtn');
+        const drawModeBtn = document.getElementById('drawModeBtn'); // NEW
+        const eraseModeBtn = document.getElementById('eraseModeBtn'); // NEW
+        const modeButtons = [drawModeBtn, eraseModeBtn];
+        const messageBox = document.getElementById('messageBox');
+        const canvasWrapper = document.getElementById('canvasWrapper');
+        const placeholder = document.getElementById('placeholder');
+        
+        // References for Brush Control
+        const brushSizeSlider = document.getElementById('brushSizeSlider');
+        const brushSizeValue = document.getElementById('brushSizeValue');
+
+        const originalCanvas = document.getElementById('originalCanvas');
+        const originalCtx = originalCanvas.getContext('2d');
+        
+        const maskCanvas = document.getElementById('maskCanvas');
+        const maskCtx = maskCanvas.getContext('2d');
+        
+        const resultCanvas = document.getElementById('resultCanvas');
+        const resultCtx = resultCanvas.getContext('2d');
+
+        // --- State Variables ---
+        let originalImage = null;
+        let isDrawing = false;
+        let isImageLoaded = false;
+        let BRUSH_SIZE = 30; 
+        let isEraserMode = false; // NEW: Controls Draw vs Erase mode
+        
+        // --- History State Variables ---
+        let maskHistory = [];
+        let historyIndex = -1;
+        const MAX_HISTORY_STATES = 20; // Limit memory usage for history
+
+        // ------------------------------------
+        // --- Utility & Error Handling ---
+        // ------------------------------------
+
+        function showMessage(text, isError = true) {
+            messageBox.textContent = text;
+            messageBox.classList.remove('hidden');
+            if (isError) {
+                messageBox.classList.remove('text-green-600');
+                messageBox.classList.add('text-red-600');
+            } else {
+                messageBox.classList.remove('text-red-600');
+                messageBox.classList.add('text-green-600');
+            }
+            // Temporarily hide messages after 5 seconds for better flow
+            setTimeout(() => messageBox.classList.add('hidden'), 5000);
+        }
+
+        function updateUndoRedoButtons() {
+            if (!isImageLoaded) {
+                undoBtn.disabled = true;
+                redoBtn.disabled = true;
+                return;
+            }
+            undoBtn.disabled = historyIndex <= 0;
+            redoBtn.disabled = historyIndex >= maskHistory.length - 1;
+        }
+
+        // Saves the current state of the mask canvas
+        function saveMaskState() {
+            if (!isImageLoaded) return;
+            
+            // Prune forward history (redo states) if we are not at the end
+            if (historyIndex < maskHistory.length - 1) {
+                maskHistory = maskHistory.slice(0, historyIndex + 1);
+            }
+
+            const width = maskCanvas.width;
+            const height = maskCanvas.height;
+            
+            // Save a snapshot of the current mask pixel data
+            const currentState = maskCtx.getImageData(0, 0, width, height);
+            maskHistory.push(currentState);
+            historyIndex++;
+
+            // Limit history size to prevent excessive memory use
+            if (maskHistory.length > MAX_HISTORY_STATES) {
+                maskHistory.shift();
+                historyIndex--;
+            }
+            
+            updateUndoRedoButtons();
+        }
+
+        // Restores a mask state from history onto the mask canvas
+        function restoreMaskState() {
+            if (historyIndex < 0 || historyIndex >= maskHistory.length || !isImageLoaded) return;
+            
+            const savedState = maskHistory[historyIndex];
+            // Clear the canvas first
+            maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            // Put the saved image data back
+            maskCtx.putImageData(savedState, 0, 0);
+            
+            updatePreview(); // Update the visual result immediately
+            updateUndoRedoButtons();
+        }
+
+        function setControlsEnabled(enabled) {
+            clearMaskBtn.disabled = !enabled;
+            updateUndoRedoButtons(); // Initial state update
+        }
+
+        // NEW/UPDATED: Configures the mask context based on the current mode (Draw or Erase)
+        function setupMaskContext() {
+            maskCtx.lineWidth = BRUSH_SIZE; 
+            maskCtx.lineCap = 'round';
+
+            if (isEraserMode) {
+                // Use 'destination-out' to erase content (make target pixels transparent)
+                maskCtx.globalCompositeOperation = 'destination-out';
+                maskCtx.strokeStyle = 'rgba(0, 0, 0, 1)'; // Draw with opaque color to clear everything underneath
+                maskCanvas.style.cursor = 'url("data:image/svg+xml;charset=utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'32\' height=\'32\' viewBox=\'0 0 32 32\'><circle cx=\'16\' cy=\'16\' r=\'15\' fill=\'none\' stroke=\'white\' stroke-width=\'2\'/><line x1=\'8\' y1=\'8\' x2=\'24\' y2=\'24\' stroke=\'white\' stroke-width=\'2\'/><line x1=\'8\' y1=\'24\' x2=\'24\' y2=\'8\' stroke=\'white\' stroke-width=\'2\'/></svg>") 16 16, crosshair';
+
+            } else {
+                // Use 'source-over' to draw the mask (make target pixels opaque/red)
+                maskCtx.globalCompositeOperation = 'source-over';
+                maskCtx.strokeStyle = 'rgba(255, 0, 0, 0.8)'; // Red, semi-transparent color for visual masking
+                maskCanvas.style.cursor = 'crosshair';
+            }
+        }
+        
+        function initializeBrushControls() {
+            const initialSize = BRUSH_SIZE;
+            brushSizeSlider.value = initialSize;
+            brushSizeValue.textContent = `${initialSize}px`;
+            
+            // Set initial mode to Draw
+            setMode(false); 
+
+            brushSizeSlider.addEventListener('input', (e) => {
+                BRUSH_SIZE = parseInt(e.target.value);
+                brushSizeValue.textContent = `${BRUSH_SIZE}px`;
+                setupMaskContext(); // Update the canvas context line width
+            });
+        }
+
+
+        // ------------------------------------
+        // --- 1. Image Loading ---
+        // ------------------------------------
+
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                originalImage = new Image();
+                originalImage.onload = () => {
+                    handleImageLoad(originalImage);
+                };
+                originalImage.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function handleImageLoad(img) {
+            isImageLoaded = true;
+            placeholder.classList.add('hidden');
+            canvasWrapper.classList.remove('hidden');
+            
+            const aspectRatio = img.naturalWidth / img.naturalHeight;
+            const maxWidth = 800; 
+            let displayWidth = img.naturalWidth;
+            let displayHeight = img.naturalHeight;
+
+            if (displayWidth > maxWidth) {
+                displayWidth = maxWidth;
+                displayHeight = displayWidth / aspectRatio;
+            }
+
+            canvasWrapper.style.width = `${displayWidth}px`;
+            canvasWrapper.style.height = `${displayHeight}px`;
+
+            originalCanvas.width = displayWidth;
+            originalCanvas.height = displayHeight;
+            maskCanvas.width = displayWidth;
+            maskCanvas.height = displayHeight;
+            resultCanvas.width = displayWidth;
+            resultCanvas.height = displayHeight;
+
+            // Draw the original image onto the hidden canvas (C1)
+            originalCtx.clearRect(0, 0, displayWidth, displayHeight);
+            originalCtx.drawImage(img, 0, 0, displayWidth, displayHeight);
+
+            // Clear the mask (C2) and the result (C3)
+            maskCtx.clearRect(0, 0, displayWidth, displayHeight);
+            resultCtx.clearRect(0, 0, displayWidth, displayHeight);
+            
+            setupMaskContext();
+            
+            // Reset history and save initial state (clear mask)
+            maskHistory = [];
+            historyIndex = -1;
+            saveMaskState();
+            
+            setControlsEnabled(true);
+            showMessage("Image loaded! Draw on the image to mask areas for transparency.", false);
+        }
+
+        // ------------------------------------
+        // --- 2. Drawing Logic (Masking) ---
+        // ------------------------------------
+
+        function getClientPosition(e) {
+            const rect = maskCanvas.getBoundingClientRect();
+            let clientX, clientY;
+
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+
+            return {
+                x: clientX - rect.left,
+                y: clientY - rect.top
+            };
+        }
+
+        function startDrawing(e) {
+            if (!isImageLoaded) return;
+            e.preventDefault();
+            isDrawing = true;
+            const pos = getClientPosition(e);
+            maskCtx.beginPath();
+            maskCtx.moveTo(pos.x, pos.y);
+            draw(e);
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            e.preventDefault();
+            const pos = getClientPosition(e);
+            maskCtx.lineTo(pos.x, pos.y);
+            maskCtx.stroke();
+            maskCtx.beginPath();
+            maskCtx.moveTo(pos.x, pos.y);
+        }
+
+        function stopDrawing(e) {
+            if (!isImageLoaded || !isDrawing) return;
+            isDrawing = false;
+            maskCtx.closePath();
+            
+            // Save the new state before updating preview
+            saveMaskState();
+            updatePreview(); 
+        }
+
+        // Attach mouse events
+        maskCanvas.addEventListener('mousedown', startDrawing);
+        maskCanvas.addEventListener('mousemove', draw);
+        window.addEventListener('mouseup', stopDrawing);
+
+        // Attach touch events for mobile
+        maskCanvas.addEventListener('touchstart', startDrawing);
+        maskCanvas.addEventListener('touchmove', draw);
+        window.addEventListener('touchend', stopDrawing);
+
+        // ------------------------------------
+        // --- 3. Control Handlers ---
+        // ------------------------------------
+
+        // NEW: Function to set and style the current mode
+        function setMode(isErase) {
+            if (isErase === isEraserMode) return;
+            
+            isEraserMode = isErase;
+            setupMaskContext(); // Reconfigures context based on new mode
+            
+            // Update button styles
+            drawModeBtn.classList.toggle('bg-indigo-600', !isEraserMode);
+            drawModeBtn.classList.toggle('text-white', !isEraserMode);
+            drawModeBtn.classList.toggle('bg-white', isEraserMode);
+            drawModeBtn.classList.toggle('text-gray-700', isEraserMode);
+
+            eraseModeBtn.classList.toggle('bg-indigo-600', isEraserMode);
+            eraseModeBtn.classList.toggle('text-white', isEraserMode);
+            eraseModeBtn.classList.toggle('bg-white', !isEraserMode);
+            eraseModeBtn.classList.toggle('text-gray-700', !isEraserMode);
+
+            const modeText = isEraserMode ? 'Erase Mask Mode' : 'Draw Mask Mode';
+            showMessage(`Switched to ${modeText}.`, false);
+        }
+
+        // NEW: Mode button handlers
+        drawModeBtn.addEventListener('click', () => setMode(false));
+        eraseModeBtn.addEventListener('click', () => setMode(true));
+
+
+        // Undo/Redo Handlers
+        undoBtn.addEventListener('click', () => {
+            if (historyIndex > 0) {
+                historyIndex--;
+                restoreMaskState();
+                showMessage("Undo successful.", false);
+            }
+        });
+
+        redoBtn.addEventListener('click', () => {
+            if (historyIndex < maskHistory.length - 1) {
+                historyIndex++;
+                restoreMaskState();
+                showMessage("Redo successful.", false);
+            }
+        });
+
+
+        clearMaskBtn.addEventListener('click', () => {
+            if (!isImageLoaded) return;
+            maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            
+            // Save cleared state to history
+            saveMaskState();
+            
+            // Reset result canvas and update preview
+            updatePreview();
+            showMessage("Mask cleared. Start drawing again!", false);
+        });
+
+        cutAndDownloadBtn.addEventListener('click', () => {
+            if (!isImageLoaded) return;
+            // Ensure the latest mask is applied visually before downloading
+            updatePreview(); 
+            downloadImage();
+        });
+
+        // ------------------------------------
+        // --- 4. Core Cutting Logic (Refactored) ---
+        // ------------------------------------
+
+        // Core logic to apply the mask and generate the cut image data
+        function applyMask() {
+            if (!isImageLoaded) {
+                return null;
+            }
+            const width = originalCanvas.width;
+            const height = originalCanvas.height;
+
+            // 1. Get image data from the original (C1) and the mask (C2)
+            const originalImageData = originalCtx.getImageData(0, 0, width, height);
+            const maskImageData = maskCtx.getImageData(0, 0, width, height);
+            const originalData = originalImageData.data;
+            const maskData = maskImageData.data;
+            
+            // Create a new ImageData object for the final cut image (C3)
+            const cutImageData = resultCtx.createImageData(width, height);
+            const cutData = cutImageData.data;
+
+            for (let i = 0; i < originalData.length; i += 4) {
+                // R, G, B, A of original pixel
+                cutData[i] = originalData[i];
+                cutData[i + 1] = originalData[i + 1];
+                cutData[i + 2] = originalData[i + 2];
+                let a = originalData[i + 3];
+
+                // Check mask R, G, B for any color (indicating a drawn stroke)
+                const maskR = maskData[i];
+                const maskG = maskData[i + 1];
+                const maskB = maskData[i + 2];
+                const maskA = maskData[i + 3]; // Check alpha too, in case of destination-out usage (it leaves 0 alpha)
+
+                // If the mask pixel is colored AND visible (alpha > 0), set the resulting alpha to 0 (transparent)
+                // Note: since the mask stroke color is rgba(255, 0, 0, 0.8), we check R > 0.
+                if (maskR > 0 && maskA > 0) { 
+                    a = 0; 
+                }
+
+                // Set the final alpha channel
+                cutData[i + 3] = a;
+            }
+            return cutImageData;
+        }
+
+        // Updates the result canvas with the latest cut image data
+        function updatePreview() {
+            const cutImageData = applyMask();
+            if (cutImageData) {
+                resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+                resultCtx.putImageData(cutImageData, 0, 0);
+            }
+        }
+
+
+        function downloadImage() {
+            // Create a temporary link element
+            const link = document.createElement('a');
+            
+            // Convert the result canvas content to a data URL (PNG format preserves transparency)
+            const dataURL = resultCanvas.toDataURL('image/png');
+            
+            link.href = dataURL;
+            link.download = 'cut_image_result.png';
+            
+            // Programmatically click the link to trigger the download
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showMessage("Image cut and download started!", false);
+        }
+
+        // Initialize all controls and settings when the script runs
+        window.onload = initializeBrushControls;
+
+        // Firebase Initialization (Mandatory use for the environment)
+        async function initializeApp() {
+            if (Object.keys(firebaseConfig).length === 0) {
+                 // Skip Firebase if no config is available
+                 return;
+            }
+            try {
+                // Import necessary modules dynamically
+                const { initializeApp: _initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
+                const { getAuth, signInAnonymously, signInWithCustomToken, setPersistence, browserLocalPersistence } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
+
+                const app = _initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                
+                // Use local persistence if possible
+                await setPersistence(auth, browserLocalPersistence);
+
+                if (typeof __initial_auth_token !== 'undefined') {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                console.log("Firebase initialized and authenticated.");
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+            }
+        }
+        initializeApp();
+
+    </script>
+</body>
+</html>
