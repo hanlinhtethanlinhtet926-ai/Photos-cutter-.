@@ -1,4 +1,3 @@
-# Photos-cutter-.
 
 # Photo Eraser Tool
 
